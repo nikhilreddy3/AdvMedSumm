@@ -3,7 +3,7 @@
 This is the official repository of the paper **AdvMedSumm: Contrastive Learning Framework for Faithful Medical Summarization**
 
 ## Files Descriptions
-1. **make_mimic_data.py** - Create RRS dataset from the MIMIC data zip file. Refer to [original-repo] https://github.com/abachaa/MEDIQA2021/tree/main/Task3 for complete details.
+1. **make_mimic_data.py** - Create RRS dataset from the MIMIC data zip file. Refer to [original-repo](https://github.com/abachaa/MEDIQA2021/tree/main/Task3) for complete details.
 2. **bart_hftrainer_medical.py** - Contains the functions to train BART with and without AdvMedSumm perturber on the datasets
 3. **eval_bart_medical_adv.py** - Containts functions to evaluate model trained using AdvMedSumm approach on the validation and other test datasets
 4. **eval_bart_medical_base.py** - Contains functions to train the baseline model on the validation and other test datasets
@@ -23,6 +23,7 @@ This is the official repository of the paper **AdvMedSumm: Contrastive Learning 
     
 ## HQS dataset 
 - Download the data from the HQS-data folder which contains the training and the validation dataset. You can run and evaluate the models on HQS dataset using following commands
+  
 - **Training:**
   - with AdvMedSumm: 
     ```bash
@@ -43,7 +44,8 @@ This is the official repository of the paper **AdvMedSumm: Contrastive Learning 
     ``` 
 
 ## RRS dataset 
-- Download and preprocess the data from [original repo]([https://github.com/fladhak/pretraining_biases](https://github.com/abachaa/MEDIQA2021/tree/main/Task3)). You can run and evaluate the models on HQS dataset using following commands
+- Download and preprocess the data from [original repo](https://github.com/abachaa/MEDIQA2021/tree/main/Task3). You can run and evaluate the models on RRS dataset using following commands
+  
 - **Training:**
   - with AdvMedSumm: 
     ```bash
