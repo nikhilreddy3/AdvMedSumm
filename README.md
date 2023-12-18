@@ -16,7 +16,6 @@ This is the official repository of the paper **AdvMedSumm: Contrastive Learning 
     transformers==4.36.0
     trl==0.7.4
     peft==0.7.1.dev0
-    fairseq=0.12.2
     sacremoses==0.1.1
     fastBPE
     ```
