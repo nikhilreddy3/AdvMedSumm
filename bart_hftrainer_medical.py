@@ -37,9 +37,6 @@ else:
 set_seed(41)
 
 ATTACK_EPS = 0.01
-#ATTACK_LR = 0.01
-#CLAMP_MIN_VALUE = 0
-#CLAMP_MAX_VALUE = 1
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -94,9 +91,6 @@ def compute_metrics(eval_preds):
     prediction_lens = [np.count_nonzero(pred != tokenizer.pad_token_id) for pred in preds]
     result["gen_len"] = np.mean(prediction_lens)
 
-    # faith_metrics = get_faith_metrics(decoded_preds, decoded_labels, vad_dict)
-
-    # result = {k:v for d in (result, framing_metrics) for (k,v) in d.items()}
     return result
 
 
@@ -148,27 +142,24 @@ class MyClassModel(BartForConditionalGeneration):
         y = y.detach().clone().to(device) 
 
         x["last_hidden_state"].requires_grad = True
-        #decoder_outputs = self.forward_decoder(x)
-        # decoder_outputs = self.forward_decoder(decoder_input_ids=decoder_input_ids, 
-        #                                        decoder_attention_mask=decoder_attention_mask, 
-        #                                        encoder_outputs=x,
-        #                                        attention_mask=attention_mask,
-        #                                        decoder_inputs_embeds=decoder_inputs_embeds,
-        #                                        use_cache=use_cache,
-        #                                        return_dict=return_dict
-        #                                        )
+        decoder_outputs = self.forward_decoder(x)
+        decoder_outputs = self.forward_decoder(decoder_input_ids=decoder_input_ids, 
+                                               decoder_attention_mask=decoder_attention_mask, 
+                                               encoder_outputs=x,
+                                               attention_mask=attention_mask,
+                                               decoder_inputs_embeds=decoder_inputs_embeds,
+                                               use_cache=use_cache,
+                                               return_dict=return_dict
+                                               )
 
-        # lm_logits = self.get_lm_head_outs(decoder_outputs=decoder_outputs)
-
-        # #criteron = F.cross_entropy(lm_logits.view(-1, self.config.vocab_size), y.view(-1))
-        # #criteron.backward()
-        # criteron = CrossEntropyLoss()
-        # loss = criteron(lm_logits.view(-1, self.config.vocab_size), y.view(-1))
-        # grads = torch.autograd.grad(loss, x.last_hidden_state, retain_graph=False, create_graph=False)[0]
-        # sign = grads.sign()
-        sign = 1
+        lm_logits = self.get_lm_head_outs(decoder_outputs=decoder_outputs)
+                        
+        criteron = CrossEntropyLoss()
+        loss = criteron(lm_logits.view(-1, self.config.vocab_size), y.view(-1))
+        grads = torch.autograd.grad(loss, x.last_hidden_state, retain_graph=False, create_graph=False)[0]
+        sign = grads.sign()
+                        
         x_adv = x["last_hidden_state"] + self.epsilon*sign
-        #x_adv = torch.clamp(x_adv, min=self.feat_min, max=self.feat_max).detach()
         x_adv = x_adv.detach()
         
         return x_adv
@@ -205,12 +196,6 @@ class MyClassModel(BartForConditionalGeneration):
                         output_hidden_states: Optional[bool] = None,
                         return_dict: Optional[bool] = None,                        
                         ):
-        # decoder_outputs = self.decoder(
-        #     input_ids=decoder_input_ids,
-        #     attention_mask=decoder_attention_mask,
-        #     encoder_hidden_states=encoder_outputs.last_hidden_state,
-        # )
-        #return decoder_outputs
         
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
@@ -284,8 +269,7 @@ class MyClassModel(BartForConditionalGeneration):
             encoder_outputs = self.forward_encoder(input_ids=input_ids, 
                                                 attention_mask=attention_mask, 
                                                 return_dict=return_dict)
-        # print(encoder_outputs["last_hidden_state"])
-        # print("0000000000000000000000000000000000000000000000000000000000000000")
+
         if self.training:
             encoder_outputs["last_hidden_state"] = self.emb_perturb(encoder_outputs, labels,
                                                decoder_input_ids=decoder_input_ids, 
@@ -296,7 +280,7 @@ class MyClassModel(BartForConditionalGeneration):
                                                 use_cache=use_cache,
                                                 return_dict=return_dict)
             encoder_outputs["last_hidden_state"].requires_grad = True
-        # print(encoder_outputs["last_hidden_state"].requires_grad)
+
         decoder_outputs = self.forward_decoder(decoder_input_ids=decoder_input_ids, 
                                                decoder_attention_mask=decoder_attention_mask, 
                                                encoder_outputs=encoder_outputs,
@@ -310,9 +294,6 @@ class MyClassModel(BartForConditionalGeneration):
 
         masked_lm_loss = None
         if labels is not None:
-            # labels = labels.to(lm_logits.device)
-            # loss_fct = CrossEntropyLoss()
-            # masked_lm_loss = loss_fct(lm_logits.view(-1, self.config.vocab_size), labels.view(-1))
             masked_lm_loss = self.get_lm_loss(lm_logits, labels)
 
 
@@ -342,21 +323,6 @@ def get_hf_model(model_ckpt, adv_training):
         model = AutoModelForSeq2SeqLM.from_pretrained(model_ckpt, config = config)
     return model
 
-
-def prepare_hf_dataset(dataset, tokenizer, max_len, train_sample_size):
-    raw_dataset = load_dataset(dataset)
-    text_col, label_col = summarization_name_mapping[dataset][0], summarization_name_mapping[dataset][1]
-
-    sample_size = int(len(raw_dataset['train'][label_col])*train_sample_size)
-
-    train_data = myDataset(raw_dataset['train'][text_col][:sample_size], raw_dataset['train'][label_col][:sample_size],
-                         tokenizer, max_len)
-    val_data  = myDataset(raw_dataset['validation'][text_col], raw_dataset['validation'][label_col],
-                        tokenizer, max_len)
-    test_data = myDataset(raw_dataset['test'][text_col], raw_dataset['test'][label_col],
-                        tokenizer, max_len)
-    return train_data, val_data, test_data
-
 def prepare_sumpubmed_dataset(dataset, tokenizer, max_len, train_sample_size):
 
     data_dir = 'sumpubmed-master/'
@@ -376,8 +342,6 @@ def prepare_sumpubmed_dataset(dataset, tokenizer, max_len, train_sample_size):
     train_shorter_abstracts = read_sumpubmed_dataset(f"{data_dir}shorter_abstract")
     train_data = myDataset(train_texts[:10000], train_shorter_abstracts[:10000], tokenizer, max_len)
 
-    print(len(train_texts))
-    print("*******************************************************")
     # Create val_data with 2,000 examples
     val_data = myDataset(train_texts[10000:12000], train_shorter_abstracts[10000:12000], tokenizer, max_len)
     
@@ -520,9 +484,7 @@ if __name__ == "__main__":
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
 
-    if args.dataset == 'xsum':
-        train_data, val_data, test_data = prepare_hf_dataset(args.dataset, tokenizer=tokenizer, max_len=args.max_len, train_sample_size=args.sample_size)
-    elif args.dataset == 'rrs':
+    if args.dataset == 'rrs':
         train_data, val_data, indiana_data = prepare_rrs_dataset(tokenizer=tokenizer, max_len=args.max_len)
     elif args.dataset == 'hqs':
         train_data, val_data = prepare_hqs_dataset(tokenizer=tokenizer, max_len=args.max_len)
