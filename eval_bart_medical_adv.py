@@ -6,37 +6,40 @@ import json
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 import nltk
+import inspect
 from typing import List, Optional, Tuple, Union
 from transformers.modeling_outputs import Seq2SeqLMOutput, Seq2SeqModelOutput
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
-from sklearn.model_selection import train_test_split
+import pickle
+from matplotlib import pyplot as plt
+import seaborn as sns
+from collections import defaultdict
 
 from transformers import (
     AutoConfig,
     AutoTokenizer,
+    Trainer,
+    TrainingArguments,
     set_seed,
     logging,
+    AutoModelForSeq2SeqLM,
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
-    BartForConditionalGeneration,
-    AutoModelForSeq2SeqLM
+    BartForConditionalGeneration
 )
 
 from datasets import load_dataset
 import evaluate
-# from framing_metrics import get_framing_metrics, load_VAD_lexicons
+# from questeval.questeval_metric import QuestEval
+from summac.model_summac import SummaCZS
 
 import os
-WANDB_REPORT = True
-
-if WANDB_REPORT:
-    os.environ["WANDB_PROJECT"]="adversarial_medical"
-else:
-    os.environ["WANDB_DISABLED"] = "true"
+os.environ["WANDB_PROJECT"]="adv_lang_summ_evaluation"
+#os.environ["WANDB_DISABLED"] = "true"
 
 set_seed(41)
 
-ATTACK_EPS = 0.01
+ATTACK_EPS = 0.1
 #ATTACK_LR = 0.01
 #CLAMP_MIN_VALUE = 0
 #CLAMP_MAX_VALUE = 1
@@ -63,7 +66,43 @@ summarization_name_mapping = {
     "cnn_dailymail": ("article", "highlights"),
     "xsum": ("document", "summary"),
 }
+
+nationalilty = {
+    'USA': 'american',
+    'Germany': 'german',
+    'Cuba': 'cuban',
+    'Brazil': 'brazilian',
+    'France': 'french',
+    'Great Britain': 'british',
+    'Kenya': 'kenyan',
+    'Finland': 'finnish',
+    'Japan': 'japanese',
+    'China': 'chinese',
+    'Nigeria': 'nigerian',
+    'Tanzania': 'tanzanian',
+    'Korea': 'korean',
+    'Vietnam': 'vietnamese'
+}
+
+all_countries = [
+    'USA',
+    'Cuba',
+    'Brazil',
+    'Germany',
+    'France',
+    'Great Britain',
+    'Finland',
+    'Japan',
+    'China',
+    'Korea',
+    'Vietnam',
+    'Kenya',
+    'Nigeria',
+    'Tanzania',
+]
 metric = evaluate.load("rouge")
+
+summary_data = []
 
 def postprocess_text(preds, labels):
     preds = [pred.strip() for pred in preds]
@@ -93,15 +132,11 @@ def compute_metrics(eval_preds):
     result = {k: round(v * 100, 4) for k, v in result.items()}
     prediction_lens = [np.count_nonzero(pred != tokenizer.pad_token_id) for pred in preds]
     result["gen_len"] = np.mean(prediction_lens)
-
-    # faith_metrics = get_faith_metrics(decoded_preds, decoded_labels, vad_dict)
-
-    # result = {k:v for d in (result, framing_metrics) for (k,v) in d.items()}
     return result
 
 
 class myDataset(Dataset):
-    def __init__(self, texts, labels, tokenizer, max_len=3072) -> None:
+    def __init__(self, texts, labels, tokenizer, max_len=1024) -> None:
         self.texts = texts
         self.labels = labels
         self.tokenizer = tokenizer
@@ -125,6 +160,24 @@ class myDataset(Dataset):
     def __len__(self):
         return len(self.texts)
 
+class nameNatDataset(Dataset):
+    def __init__(self, texts, tokenizer, max_len=1024) -> None:
+        self.texts = texts
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+
+    def __getitem__(self, idx):
+        encoding = self.tokenizer(self.texts[idx], 
+                                   max_length=self.max_len, 
+                                   padding="max_length", 
+                                   truncation=True)
+
+        return encoding
+    
+    def __len__(self):
+        return len(self.texts)
+
+
 
 class MyClassModel(BartForConditionalGeneration):
     def __init__(self, config, epsilon=ATTACK_EPS):
@@ -143,34 +196,32 @@ class MyClassModel(BartForConditionalGeneration):
                     use_cache,
                     return_dict
                     ):
-
+        #x = x.detach().clone().to(device)
         x["last_hidden_state"] = x["last_hidden_state"].detach().clone().to(device)
         y = y.detach().clone().to(device) 
 
         x["last_hidden_state"].requires_grad = True
         #decoder_outputs = self.forward_decoder(x)
-        # decoder_outputs = self.forward_decoder(decoder_input_ids=decoder_input_ids, 
-        #                                        decoder_attention_mask=decoder_attention_mask, 
-        #                                        encoder_outputs=x,
-        #                                        attention_mask=attention_mask,
-        #                                        decoder_inputs_embeds=decoder_inputs_embeds,
-        #                                        use_cache=use_cache,
-        #                                        return_dict=return_dict
-        #                                        )
+        decoder_outputs = self.forward_decoder(decoder_input_ids=decoder_input_ids, 
+                                               decoder_attention_mask=decoder_attention_mask, 
+                                               encoder_outputs=x,
+                                               attention_mask=attention_mask,
+                                               decoder_inputs_embeds=decoder_inputs_embeds,
+                                               use_cache=use_cache,
+                                               return_dict=return_dict
+                                               )
 
-        # lm_logits = self.get_lm_head_outs(decoder_outputs=decoder_outputs)
+        lm_logits = self.get_lm_head_outs(decoder_outputs=decoder_outputs)
 
-        # #criteron = F.cross_entropy(lm_logits.view(-1, self.config.vocab_size), y.view(-1))
-        # #criteron.backward()
-        # criteron = CrossEntropyLoss()
-        # loss = criteron(lm_logits.view(-1, self.config.vocab_size), y.view(-1))
-        # grads = torch.autograd.grad(loss, x.last_hidden_state, retain_graph=False, create_graph=False)[0]
-        # sign = grads.sign()
-        sign = 1
+        #criteron = F.cross_entropy(lm_logits.view(-1, self.config.vocab_size), y.view(-1))
+        #criteron.backward()
+        criteron = CrossEntropyLoss()
+        loss = criteron(lm_logits.view(-1, self.config.vocab_size), y.view(-1))
+        grads = torch.autograd.grad(loss, x.last_hidden_state, retain_graph=False, create_graph=False)[0]
+        sign = grads.sign()
         x_adv = x["last_hidden_state"] + self.epsilon*sign
         #x_adv = torch.clamp(x_adv, min=self.feat_min, max=self.feat_max).detach()
         x_adv = x_adv.detach()
-        
         return x_adv
 
 
@@ -279,13 +330,11 @@ class MyClassModel(BartForConditionalGeneration):
                 decoder_input_ids = shift_tokens_right(
                     labels, self.config.pad_token_id, self.config.decoder_start_token_id
                 )
-
         if encoder_outputs is None:
             encoder_outputs = self.forward_encoder(input_ids=input_ids, 
                                                 attention_mask=attention_mask, 
                                                 return_dict=return_dict)
-        # print(encoder_outputs["last_hidden_state"])
-        # print("0000000000000000000000000000000000000000000000000000000000000000")
+
         if self.training:
             encoder_outputs["last_hidden_state"] = self.emb_perturb(encoder_outputs, labels,
                                                decoder_input_ids=decoder_input_ids, 
@@ -295,8 +344,7 @@ class MyClassModel(BartForConditionalGeneration):
                                                 decoder_inputs_embeds=decoder_inputs_embeds,
                                                 use_cache=use_cache,
                                                 return_dict=return_dict)
-            encoder_outputs["last_hidden_state"].requires_grad = True
-        # print(encoder_outputs["last_hidden_state"].requires_grad)
+
         decoder_outputs = self.forward_decoder(decoder_input_ids=decoder_input_ids, 
                                                decoder_attention_mask=decoder_attention_mask, 
                                                encoder_outputs=encoder_outputs,
@@ -306,6 +354,8 @@ class MyClassModel(BartForConditionalGeneration):
                                                return_dict=return_dict
                                                )
 
+        #lm_logits = self.lm_head(decoder_outputs[0])
+        #lm_logits = lm_logits + self.final_logits_bias.to(lm_logits.device)
         lm_logits = self.get_lm_head_outs(decoder_outputs=decoder_outputs)
 
         masked_lm_loss = None
@@ -334,185 +384,251 @@ class MyClassModel(BartForConditionalGeneration):
         )
 
 
-def get_hf_model(model_ckpt, adv_training):
+def get_hf_model(model_ckpt):
     config = AutoConfig.from_pretrained(model_ckpt)
-    if adv_training:
-        model = MyClassModel.from_pretrained(model_ckpt, config = config)
-    else:
-        model = AutoModelForSeq2SeqLM.from_pretrained(model_ckpt, config = config)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_ckpt, config = config)
+    # model = MyClassModel.from_pretrained(model_ckpt, config = config)
     return model
 
 
-def prepare_hf_dataset(dataset, tokenizer, max_len, train_sample_size):
+def prepare_hf_dataset(dataset, tokenizer, max_len):
+    print(type(dataset))
     raw_dataset = load_dataset(dataset)
+    print(type(raw_dataset))
+    print(raw_dataset["validation"])
+    print(raw_dataset["validation"]["document"][0])
     text_col, label_col = summarization_name_mapping[dataset][0], summarization_name_mapping[dataset][1]
 
-    sample_size = int(len(raw_dataset['train'][label_col])*train_sample_size)
-
-    train_data = myDataset(raw_dataset['train'][text_col][:sample_size], raw_dataset['train'][label_col][:sample_size],
-                         tokenizer, max_len)
     val_data  = myDataset(raw_dataset['validation'][text_col], raw_dataset['validation'][label_col],
                         tokenizer, max_len)
     test_data = myDataset(raw_dataset['test'][text_col], raw_dataset['test'][label_col],
                         tokenizer, max_len)
-    return train_data, val_data, test_data
+    return val_data, test_data
 
-def prepare_sumpubmed_dataset(dataset, tokenizer, max_len, train_sample_size):
-
-    data_dir = 'sumpubmed-master/'
-    
-    def read_sumpubmed_dataset(foldername):
-        all_contents = []
-        for filename in os.listdir(foldername):
-            filepath = os.path.join(foldername, filename)
-            if os.path.isfile(filepath):
-                with open(filepath, 'r') as f:
-                    lines = f.readlines()
-                    all_contents.extend(lines)
-        return all_contents
-
-    # Create train_data with 10,000 examples
-    train_texts = read_sumpubmed_dataset(f"{data_dir}text")
-    train_shorter_abstracts = read_sumpubmed_dataset(f"{data_dir}shorter_abstract")
-    train_data = myDataset(train_texts[:10000], train_shorter_abstracts[:10000], tokenizer, max_len)
-
-    print(len(train_texts))
-    print("*******************************************************")
-    # Create val_data with 2,000 examples
-    val_data = myDataset(train_texts[10000:12000], train_shorter_abstracts[10000:12000], tokenizer, max_len)
-    
-    return train_data, val_data
-
-
-
-def prepare_rrs_dataset(tokenizer, max_len):
-
-    def read_rrsdataset(filename):
-        with open(filename, 'r') as file:
-            data = json.load(file)
-        
-        df = pd.DataFrame(data)
-        df = df.rename(columns={'study_id': 'Study ID', 'subject_id': 'Subject ID',
-                                'findings': 'Findings', 'impression': 'Impression',
-                                'background': 'Background'})
-        print(df.head())
-        df['Text'] = df['Findings'] + ' ' + df['Background']
-        df['Summary'] = df['Impression']
-        df.drop(['Findings', 'Impression', 'Background'], axis=1, inplace=True)
-        return df['Text'].tolist(), df['Summary'].tolist()
-    
-
-    train_text, train_summary =  read_rrsdataset("train.json")
-    val_text, val_summary =  read_rrsdataset("dev.json")
-    indiana_text, indiana_summary =  read_rrsdataset("indiana_dev.json")
-
-    train_text, _, train_summary, _ = train_test_split(train_text, train_summary, test_size=0.9, random_state=42)
-    
-    train_data = myDataset(train_text,
-                           train_summary,
-                           tokenizer, max_len
-                           )
-    val_data = myDataset(val_text,
-                           val_summary,
-                           tokenizer, max_len
-                           )
-    indiana_data = myDataset(indiana_text,
-                           indiana_summary,
-                           tokenizer, max_len
-                           )
-    return train_data, val_data, indiana_data
-
-def prepare_hqs_dataset( tokenizer, max_len):
-    def read_hqsdataset(filename, training=True):
-        # Read the Excel file
-        data = pd.read_excel(filename)
-        
-        # Extract "NLM Question" and "Summary" columns as lists
-        
-        if training:
-            text = data['CHQ'].tolist()
-        else:
-            text = data['NLM Question'].tolist()
-            
-        summaries = data['Summary'].tolist()
-
-        return text, summaries
-
-    train_text, train_summary =  read_hqsdataset("MeQSum_ACL2019_BenAbacha_Demner-Fushman.xlsx", training=True)
-    val_text, val_summary =  read_hqsdataset("MEDIQA2021-Task1-QuestionSummarization-ValidationSet.xlsx", training=False)
-
-    train_data = myDataset(train_text,
-                           train_summary,
-                           tokenizer, max_len
-                           )
-    val_data = myDataset(val_text,
-                           val_summary,
-                           tokenizer, max_len
-                           )
-    return train_data, val_data
-
-
-def train_hf_model(model, train_data, val_data, epochs=5, batch_size=16, base_dir='./', max_len=512, exp=''):
-
-    total_train_samples = len(train_data)  # Replace train_data with your actual training dataset
-    total_steps = (total_train_samples // batch_size) * epochs
-
-    reporting = "wandb" if WANDB_REPORT else "none"
+def eval_xsum_hf_model(model, val_data, indiana_data, batch_size=16, base_dir='./'):
     traing_args = Seq2SeqTrainingArguments(
-        output_dir = f'{base_dir}/models_{exp}/',
-        num_train_epochs = epochs,              
-        per_device_train_batch_size = batch_size,  
+        output_dir = f'{base_dir}/models/',
         per_device_eval_batch_size = batch_size,   
-        logging_dir = f'{base_dir}/logs/',            
-        evaluation_strategy = 'epoch',
-        #eval_steps = 1,
-        save_strategy="epoch",
-        #save_steps = 1,
-        disable_tqdm= False,
-        warmup_steps = 50,
-        logging_strategy = "steps",
-        logging_steps=20,
-        report_to=reporting,
+        report_to="wandb",
         predict_with_generate = True,
-        generation_max_length = 300,
+        generation_max_length = 62,
         generation_num_beams = 6,
-        save_total_limit = 2,
-        load_best_model_at_end=True,
-        metric_for_best_model = "eval_rouge1",
-        greater_is_better = True,
-        max_steps=total_steps
+        # save_safetensors=True
     )
-    
+
+    result = defaultdict(dict)
     trainer = Seq2SeqTrainer(model=model,
-                             train_dataset=train_data,
                              eval_dataset=val_data,
                              args=traing_args,
                              compute_metrics=compute_metrics,
                              )
-    train_result = trainer.train()
-    print(train_result)
+
+    train_result = trainer.evaluate(max_length=62, num_beams=6)
+    result["val_rouge"] = train_result
+
+    trainer = Seq2SeqTrainer(model=model,
+                         eval_dataset=indiana_data,
+                         args=traing_args,
+                         compute_metrics=compute_metrics,
+                         )
+
+    train_result = trainer.evaluate(max_length=62, num_beams=6)
+    result["indiana_rouge"] = train_result
+    return result
+
+def eval_hqs_model(model, val_data, tokenizer, batch_size=16, base_dir='./'):
+    traing_args = Seq2SeqTrainingArguments(
+        output_dir = f'{base_dir}/models/',
+        per_device_eval_batch_size = batch_size,   
+        report_to="wandb",
+        predict_with_generate = True,
+        generation_max_length = 62,
+        generation_num_beams = 6,
+        # save_safetensors=True
+    )
+
+    result = defaultdict(float)
     
-    return train_result
+    trainer = Seq2SeqTrainer(model=model,
+                             args=traing_args,
+                             )
+
+    val_result = trainer.predict(val_data)
+    
+    preds = np.where(val_result.predictions != -100, val_result.predictions, tokenizer.pad_token_id)
+    generated_text = tokenizer.batch_decode(preds, skip_special_tokens=True)
+
+    val_pred_data = {
+    'texts': val_data.texts,
+    'labels': val_data.labels,
+    'generated_texts': generated_text
+    }
+    
+    # Create a DataFrame from the data
+    df = pd.DataFrame(val_pred_data)
+    
+    # Save the DataFrame as a CSV file
+    df.to_csv('hqs_val_pred_adv_data.csv', index=False)
+    
+    # questeval = QuestEval(no_cuda=False)
+    # score = questeval.corpus_questeval(hypothesis=generated_text, sources=val_data.texts)
+    # result["val_questeval"] = score
+
+    model = SummaCZS(granularity="document", model_name="vitc", device="cuda")
+
+    final_score = []
+    for source_document, summary in zip(val_data.texts, generated_text):
+        score = model.score([source_document], [summary])
+        final_score.append(score["scores"][0])
+
+    print(final_score)
+    result["val_summacc"] = sum(final_score) / len(final_score)
+
+    return result
+    
+def eval_rrs_model(model, val_data, indiana_data, tokenizer, batch_size=16, base_dir='./'):
+    traing_args = Seq2SeqTrainingArguments(
+        output_dir = f'{base_dir}/models/',
+        per_device_eval_batch_size = batch_size,   
+        report_to="wandb",
+        predict_with_generate = True,
+        generation_max_length = 62,
+        generation_num_beams = 6,
+        # save_safetensors=True
+    )
+
+    result = defaultdict(float)
+    
+    trainer = Seq2SeqTrainer(model=model,
+                             args=traing_args,
+                             )
+
+    val_result = trainer.predict(val_data)
+    
+    preds = np.where(val_result.predictions != -100, val_result.predictions, tokenizer.pad_token_id)
+    generated_text = tokenizer.batch_decode(preds, skip_special_tokens=True)
+
+    val_pred_data = {
+    'texts': val_data.texts,
+    'labels': val_data.labels,
+    'generated_texts': generated_text
+    }
+    
+    # Create a DataFrame from the data
+    df = pd.DataFrame(val_pred_data)
+    
+    # Save the DataFrame as a CSV file
+    df.to_csv('val_pred_adv_data.csv', index=False)
+    
+    # questeval = QuestEval(no_cuda=False)
+    # score = questeval.corpus_questeval(hypothesis=generated_text, sources=val_data.texts)
+    # result["val_questeval"] = score
+
+    model = SummaCZS(granularity="document", model_name="vitc", device="cuda")
+
+    final_score = []
+    for source_document, summary in zip(val_data.texts, generated_text):
+        score = model.score([source_document], [summary])
+        final_score.append(score["scores"][0])
+
+    print(final_score)
+    result["val_summacc"] = sum(final_score) / len(final_score)
+
+    indiana_result = trainer.predict(indiana_data)
+
+    preds = np.where(indiana_result.predictions != -100, indiana_result.predictions, tokenizer.pad_token_id)
+    generated_text = tokenizer.batch_decode(preds, skip_special_tokens=True)
+    
+    indiana_pred_data = {
+    'texts': val_data.texts,
+    'labels': val_data.labels,
+    'generated_texts': generated_text
+    }
+    
+    # Create a DataFrame from the data
+    df = pd.DataFrame(indiana_pred_data)
+    
+    # Save the DataFrame as a CSV file
+    df.to_csv('indiana_pred_adv_data.csv', index=False)
+
+    # # questeval = QuestEval(no_cuda=False)
+    # # score = questeval.corpus_questeval(hypothesis=generated_text, sources=indiana_data.texts)
+    # # result["indiana_questeval"] = score
+
+    final_score = []
+    for source_document, summary in zip(indiana_data.texts, generated_text):
+        score = model.score([source_document], [summary])
+        final_score.append(score["scores"][0])
+
+    print(final_score)
+    result["indiana_summacc"] = sum(final_score) / len(final_score)
+
+    return result
+
+def eval__model(model, val_data, tokenizer, batch_size=16, base_dir='./'):
+    traing_args = Seq2SeqTrainingArguments(
+        output_dir = f'{base_dir}/models/',
+        per_device_eval_batch_size = batch_size,   
+        report_to="wandb",
+        predict_with_generate = True,
+        generation_max_length = 100,
+        generation_num_beams = 6,
+        # save_safetensors=True
+    )
+
+    result = defaultdict(float)
+    
+    trainer = Seq2SeqTrainer(model=model,
+                             args=traing_args,
+                             )
+
+    val_result = trainer.predict(val_data)
+    
+    preds = np.where(val_result.predictions != -100, val_result.predictions, tokenizer.pad_token_id)
+    generated_text = tokenizer.batch_decode(preds, skip_special_tokens=True)
+
+    val_pred_data = {
+    'texts': val_data.texts,
+    'labels': val_data.labels,
+    'generated_texts': generated_text
+    }
+    
+    # Create a DataFrame from the data
+    df = pd.DataFrame(val_pred_data)
+    
+    # Save the DataFrame as a CSV file
+    df.to_csv('hqs_val_pred_adv_data.csv', index=False)
+    
+    # questeval = QuestEval(no_cuda=False)
+    # score = questeval.corpus_questeval(hypothesis=generated_text, sources=val_data.texts)
+    # result["val_questeval"] = score
+
+    model = SummaCZS(granularity="document", model_name="vitc", device="cuda")
+
+    final_score = []
+    for source_document, summary in zip(val_data.texts, generated_text):
+        score = model.score([source_document], [summary])
+        final_score.append(score["scores"][0])
+
+    print(final_score)
+    result["val_summacc"] = sum(final_score) / len(final_score)
+
+    return result
 
 
+ckpt_list = ["1145","2288"]
+model_dir = 'models_rrs_0.1/'
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Adv perturbations for bias and OOD')
     parser.add_argument('-m', '--model', default='facebook/bart-base', type = str)
-    parser.add_argument('-x', '--dataset', default='hqs', type = str)
-    parser.add_argument('-e', '--epochs', default=2, type=int)
-    parser.add_argument('-b', '--batch_size', default=8, type=int)
+    parser.add_argument('-x', '--dataset', default='rrs', type = str)
+    parser.add_argument('-b', '--batch_size', default=16, type=int)
     parser.add_argument('-l', '--max_len', default=1024, type=int)
     parser.add_argument('-v', '--verbose_setting', default=1, type=int)
     parser.add_argument('-d', '--base_dir', default='./', type = str)
-    parser.add_argument('-s', '--sample_size', default=0.1, type = float)
-    parser.add_argument('-rc', '--resume_ckpt', default=0, type = int)
-    parser.add_argument('-c', '--ckpt', default='None', type = str)
-    parser.add_argument('-a', '--adv_training', default=0, type = int)
-    parser.add_argument('--exp', default='rrs', type = str)
 
     args = parser.parse_args()
-
 
     if args.verbose_setting:
         logging.set_verbosity_debug()
@@ -520,25 +636,65 @@ if __name__ == "__main__":
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
 
-    if args.dataset == 'xsum':
-        train_data, val_data, test_data = prepare_hf_dataset(args.dataset, tokenizer=tokenizer, max_len=args.max_len, train_sample_size=args.sample_size)
-    elif args.dataset == 'rrs':
-        train_data, val_data, indiana_data = prepare_rrs_dataset(tokenizer=tokenizer, max_len=args.max_len)
-    elif args.dataset == 'hqs':
-        train_data, val_data = prepare_hqs_dataset(tokenizer=tokenizer, max_len=args.max_len)
-    elif args.dataset == 'sumpubmed':
-        train_data, val_data = prepare_sumpubmed_dataset(args.dataset, tokenizer=tokenizer, max_len=args.max_len, train_sample_size=args.sample_size)
-    else:
-        raise NotImplementedError
-        raw_dataset = prepare_eval_dataset(args.dataset)
+    if args.dataset == "rrs":
+        def read_rrsdataset(filename):
+                with open(filename, 'r') as file:
+                    data = json.load(file)
+                
+                df = pd.DataFrame(data)
+                df = df.rename(columns={'study_id': 'Study ID', 'subject_id': 'Subject ID',
+                                        'findings': 'Findings', 'impression': 'Impression',
+                                        'background': 'Background'})
+                print(df.head())
+                df['Text'] = df['Findings'] + ' ' + df['Background']
+                df['Summary'] = df['Impression']
+                df.drop(['Findings', 'Impression', 'Background'], axis=1, inplace=True)
+                return df['Text'].tolist(), df['Summary'].tolist()
+            
+        indiana_text, indiana_summary =  read_rrsdataset("indiana_dev.json")
+        val_text, val_summary =  read_rrsdataset("dev.json")
+        
+        val_data = myDataset(val_text,
+                       val_summary,
+                       tokenizer, args.max_len
+                       )
+        indiana_data = myDataset(indiana_text,
+                               indiana_summary,
+                               tokenizer, args.max_len
+                               )
+    elif args.dataset == "hqs":
+        def read_hqsdataset(filename):
+            # Read the Excel file
+            data = pd.read_excel(filename)
+            text = data['NLM Question'].tolist()
+                
+            summaries = data['Summary'].tolist()
+        
+            return text, summaries
+            
+        val_text, val_summary =  read_hqsdataset("MEDIQA2021-Task1-QuestionSummarization-ValidationSet.xlsx")
     
-    if args.resume_ckpt:
-        model = get_hf_model(args.ckpt, args.adv_training)
+        val_data = myDataset(val_text,
+                               val_summary,
+                               tokenizer, args.max_len
+                               )
+    
     else:
-        model = get_hf_model(args.model, args.adv_training)
+        val_data, test_data = prepare_hf_dataset(args.dataset, tokenizer=tokenizer, max_len=args.max_len)
 
-    eval_res = train_hf_model(model, train_data, val_data, args.epochs, args.batch_size, args.base_dir, args.max_len, args.exp)
+        
+        
+    for ckpt in ckpt_list:
+        print("*********************************Checkpoint: "+ckpt)
+        model_ckpt = f"{model_dir}checkpoint-{ckpt}"
+        model = get_hf_model(model_ckpt)
+        if args.dataset == "rrs":
+            eval_res = eval_rrs_model(model, val_data, indiana_data, tokenizer = tokenizer, batch_size=args.batch_size, base_dir='./')
+        elif args.dataset == "hqs":
+            eval_res = eval_hqs_model(model, val_data,tokenizer = tokenizer, batch_size=args.batch_size, base_dir='./')
+            # eval_res = eval_xsum_hf_model(model, val_data, indiana_data ,args.batch_size, args.base_dir)
+        else:
+            eval_res = eval_xsum_hf_model(model, val_data, test_data ,args.batch_size, args.base_dir)
     
-    with open(f"{args.resume_ckpt}_val.json", 'w') as f:
-        json.dump(eval_res, f)
-    
+        with open(f"{ckpt}_val_adv_0.01.json", 'w') as f:
+            json.dump(eval_res, f)
