@@ -22,7 +22,7 @@ This is the official repository of the paper **AdvMedSumm: Contrastive Learning 
     ```
     
 ## HQS dataset 
-
+- Download the data from the HQS-data folder which contains the training and the validation dataset. You can run and evaluate the models on HQS dataset using following commands
 - **Training:**
   - with AdvMedSumm: 
     ```bash
@@ -43,7 +43,7 @@ This is the official repository of the paper **AdvMedSumm: Contrastive Learning 
     ``` 
 
 ## RRS dataset 
-
+- Download and preprocess the data from [original repo]([https://github.com/fladhak/pretraining_biases](https://github.com/abachaa/MEDIQA2021/tree/main/Task3)). You can run and evaluate the models on HQS dataset using following commands
 - **Training:**
   - with AdvMedSumm: 
     ```bash
