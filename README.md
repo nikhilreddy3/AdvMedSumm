@@ -25,21 +25,21 @@ This is the official repository of the paper **AdvMedSumm: Contrastive Learning 
 
 - Download the data from the HQS-data folder which contains the training and the validation dataset. You can run and evaluate the models on HQS dataset using following commands
   Training
-    with AdvMedSumm :  python bart_hftrainer_medical.py --dataset=hqs --adv_training=1 --exp=hqs_0.01
-    Baseline : python bart_hftrainer_medical.py --dataset=hqs --adv_training=0 --exp=hqs_base
+    with AdvMedSumm :  ``` python bart_hftrainer_medical.py --dataset=hqs --adv_training=1 --exp=hqs_0.01 ```
+    Baseline : ``` python bart_hftrainer_medical.py --dataset=hqs --adv_training=0 --exp=hqs_base ```
   Evaluation:
-    with AdvMedSumm :  python eval_bart_medical_adv.py --dataset=hqs --model_dir=models_hqs_0.01
-    Baseline : python eval_bart_medical_base.py --dataset=hqs --model_dir=models_hqs_base
+    with AdvMedSumm :  ``` python eval_bart_medical_adv.py --dataset=hqs --model_dir=models_hqs_0.01 ``` 
+    Baseline : ``` python eval_bart_medical_base.py --dataset=hqs --model_dir=models_hqs_base ``` 
 - All the arguments are explained in the trainer python file
 
 # RRS dataset 
 
--Download and preprocess the data from [original repo]([https://github.com/fladhak/pretraining_biases](https://github.com/abachaa/MEDIQA2021/tree/main/Task3)). You can run and evaluate the models on HQS dataset using following commands
-  Training
-    with AdvMedSumm :  python bart_hftrainer_medical.py --dataset=rrs --adv_training=1 --exp=rrs_0.01
-    Baseline : python bart_hftrainer_medical.py --dataset=rrs --adv_training=0 --exp=rrs_base
+- Download and preprocess the data from [original repo]([https://github.com/fladhak/pretraining_biases](https://github.com/abachaa/MEDIQA2021/tree/main/Task3)). You can run and evaluate the models on HQS dataset using following commands
+- Training
+  with AdvMedSumm :  ```  python bart_hftrainer_medical.py --dataset=rrs --adv_training=1 --exp=rrs_0.01 ``` 
+    Baseline : ```  python bart_hftrainer_medical.py --dataset=rrs --adv_training=0 --exp=rrs_base ``` 
   Evaluation:
-    with AdvMedSumm :  python eval_bart_medical_adv.py --dataset=rrs --model_dir=models_rrs_0.01
-    Baseline : python eval_bart_medical_base.py --dataset=rrs --model_dir=models_rrs_base
+    with AdvMedSumm :   ``` python eval_bart_medical_adv.py --dataset=rrs --model_dir=models_rrs_0.01 ``` 
+    Baseline :  ``` python eval_bart_medical_base.py --dataset=rrs --model_dir=models_rrs_base ``` 
 - All the arguments are explained in the trainer python file
 
